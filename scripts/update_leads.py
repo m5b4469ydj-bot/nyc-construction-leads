@@ -20,7 +20,7 @@ DAYS_BACK = 7
 
 
 # =============================
-# DOWNLOAD NYC DOB DATA
+# DOWNLOAD DATA
 # =============================
 
 print("Downloading NYC DOB data...")
@@ -29,9 +29,11 @@ print("Downloading NYC DOB data...")
 response = requests.get(
     API_URL,
     params={
-        "$limit": 5000
+        "$limit": 5000,
+        "$order": "filing_date DESC"
     }
 )
+
 
 response.raise_for_status()
 
@@ -53,7 +55,7 @@ if df.empty:
 
 
 # =============================
-# DATE CLEANING
+# DATE HANDLING
 # =============================
 
 for col in [
@@ -65,17 +67,33 @@ for col in [
 
         df[col] = pd.to_datetime(
             df[col],
-            errors="coerce"
+            errors="coerce",
+            format="mixed"
         )
 
 
+print("\nLatest dates returned:")
+
+print(
+    df[
+        [
+            "filing_date",
+            "current_status_date"
+        ]
+    ].head(10)
+)
+
+
+
+# =============================
+# LAST 7 DAYS FILTER
+# =============================
 
 cutoff = (
     datetime.now()
     -
     timedelta(days=DAYS_BACK)
 )
-
 
 
 df = df[
@@ -95,27 +113,28 @@ print(
 
 
 if df.empty:
+
     print("No recent permits")
+
     exit()
 
 
 
 # =============================
-# STATUS FILTER
+# REMOVE BAD STATUS
 # =============================
-
-remove_status = [
-    "Withdrawn",
-    "Rejected",
-    "Denied"
-]
-
 
 if "filing_status" in df.columns:
 
     df = df[
         ~df["filing_status"]
-        .isin(remove_status)
+        .isin(
+            [
+                "Withdrawn",
+                "Rejected",
+                "Denied"
+            ]
+        )
     ]
 
 
@@ -126,10 +145,10 @@ print(
 
 
 # =============================
-# LEAD SCORING
+# LEAD SCORE
 # =============================
 
-def calculate_score(row):
+def lead_score(row):
 
     score = 0
 
@@ -145,9 +164,9 @@ def calculate_score(row):
     if "Permit" in status:
         score += 50
 
+
     if "Approved" in status:
         score += 40
-
 
 
     try:
@@ -169,6 +188,7 @@ def calculate_score(row):
         elif cost >= 500000:
             score += 40
 
+
     except:
 
         pass
@@ -179,7 +199,7 @@ def calculate_score(row):
 
 
 df["lead_score"] = df.apply(
-    calculate_score,
+    lead_score,
     axis=1
 )
 
@@ -193,7 +213,7 @@ df = df.sort_values(
 
 
 # =============================
-# DUPLICATE CONTROL
+# REMOVE ALREADY SENT
 # =============================
 
 os.makedirs(
@@ -256,7 +276,7 @@ print(
 
 
 # =============================
-# EXPORT EXCEL
+# SAVE EXCEL
 # =============================
 
 new_leads.to_excel(
@@ -266,13 +286,9 @@ new_leads.to_excel(
 
 
 
-all_seen = (
-    seen
-    .union(
-        set(
-            new_leads[ID_COLUMN]
-        )
-    )
+seen.update(
+    new_leads[ID_COLUMN]
+    .tolist()
 )
 
 
@@ -280,7 +296,7 @@ all_seen = (
 pd.DataFrame(
     {
         ID_COLUMN:
-        list(all_seen)
+        list(seen)
     }
 ).to_csv(
     SEEN_FILE,
@@ -290,7 +306,7 @@ pd.DataFrame(
 
 
 # =============================
-# DISCORD MESSAGE
+# SEND DISCORD
 # =============================
 
 message = (
@@ -302,7 +318,6 @@ message = (
 
 for _, row in new_leads.head(20).iterrows():
 
-
     address = (
         f"{row.get('house_no','')} "
         f"{row.get('street_name','')}"
@@ -310,12 +325,14 @@ for _, row in new_leads.head(20).iterrows():
 
 
     message += (
+
         f"🔥 Score: {row['lead_score']}\n"
         f"📍 {address}, {row.get('borough','')}\n"
         f"👤 {row.get('owner_s_business_name','Unknown')}\n"
         f"💰 Cost: {row.get('initial_cost','Unknown')}\n"
-        f"📌 Status: {row.get('filing_status','')}\n"
+        f"📌 Status: {row.get('filing_status','Unknown')}\n"
         f"🆔 {row[ID_COLUMN]}\n\n"
+
     )
 
 
@@ -328,6 +345,7 @@ if DISCORD_WEBHOOK:
             "content": message
         }
     )
+
 
 
 print(
