@@ -17,10 +17,11 @@ API_URL = "https://data.cityofnewyork.us/resource/rvhx-8trz.json"
 
 
 # =============================
-# DOWNLOAD NYC DOB DATA
+# DOWNLOAD DATA
 # =============================
 
 print("Downloading NYC DOB data...")
+
 
 response = requests.get(
     API_URL,
@@ -31,17 +32,47 @@ response = requests.get(
 
 response.raise_for_status()
 
+
 records = response.json()
 
 df = pd.DataFrame(records)
 
 
 if df.empty:
-    print("No data returned from NYC")
+
+    print("No data returned")
     exit()
 
 
 print(f"Downloaded {len(df)} records")
+
+
+# =============================
+# SHOW NYC VALUES
+# =============================
+
+print("\nAVAILABLE COLUMNS:")
+print(list(df.columns))
+
+
+if "job_type" in df.columns:
+
+    print("\nJOB TYPES FOUND:")
+    print(
+        df["job_type"]
+        .value_counts()
+        .head(20)
+    )
+
+
+if "job_status" in df.columns:
+
+    print("\nSTATUSES FOUND:")
+    print(
+        df["job_status"]
+        .value_counts()
+        .head(20)
+    )
 
 
 # =============================
@@ -55,66 +86,52 @@ if "pre__filing_date" in df.columns:
         errors="coerce"
     )
 
-    cutoff = datetime.now() - timedelta(days=30)
+
+    cutoff = (
+        datetime.now()
+        -
+        timedelta(days=60)
+    )
+
 
     df = df[
         df["pre__filing_date"] >= cutoff
     ]
 
 
-# =============================
-# JOB TYPE FILTER
-# =============================
-
-if "job_type" in df.columns:
-
-    df = df[
-        df["job_type"].isin(
-            [
-                "NB",
-                "ALT-1"
-            ]
-        )
-    ]
+print(
+    f"\nAfter date filter: {len(df)} records"
+)
 
 
 # =============================
-# STATUS FILTER
+# TEMP FILTER
+# KEEP ALL CONSTRUCTION
 # =============================
 
-if "job_status" in df.columns:
-
-    df = df[
-        df["job_status"].isin(
-            [
-                "PRE-FILED",
-                "FILED",
-                "IN REVIEW",
-                "PLAN EXAM",
-                "APPROVED"
-            ]
-        )
-    ]
-
-
-if df.empty:
-    print("No matching construction leads")
-    exit()
+# We are deliberately NOT filtering
+# job_type/status yet.
+# The debug output above tells us
+# the correct values.
 
 
 # =============================
 # SCORE LEADS
 # =============================
 
-def lead_score(row):
+def score(row):
 
-    score = 0
+    points = 0
+
 
     if row.get("job_type") == "NB":
-        score += 100
 
-    if row.get("job_type") == "ALT-1":
-        score += 70
+        points += 100
+
+
+    elif row.get("job_type") == "ALT-1":
+
+        points += 70
 
 
     try:
@@ -126,27 +143,28 @@ def lead_score(row):
             )
         )
 
+
         if cost >= 1000000:
-            score += 50
+
+            points += 50
+
 
         elif cost >= 500000:
-            score += 25
+
+            points += 25
+
 
     except:
 
         pass
 
 
-    if row.get("building_type"):
-        score += 10
-
-
-    return score
+    return points
 
 
 
 df["lead_score"] = df.apply(
-    lead_score,
+    score,
     axis=1
 )
 
@@ -158,7 +176,7 @@ df = df.sort_values(
 
 
 # =============================
-# ONLY NEW JOBS
+# REMOVE OLD JOBS
 # =============================
 
 os.makedirs(
@@ -169,35 +187,42 @@ os.makedirs(
 
 if "job__" not in df.columns:
 
-    print("No job number field found")
+    print("No job number column found")
     exit()
 
 
 df["job__"] = df["job__"].astype(str)
 
 
+
 if os.path.exists(SEEN_FILE):
 
-    old = pd.read_csv(SEEN_FILE)
+    old = pd.read_csv(
+        SEEN_FILE
+    )
 
-    seen_jobs = set(
+    seen = set(
         old["job__"].astype(str)
     )
 
+
 else:
 
-    seen_jobs = set()
+    seen = set()
 
 
 
 new_leads = df[
-    ~df["job__"].isin(seen_jobs)
+    ~df["job__"].isin(seen)
 ]
 
 
 if new_leads.empty:
 
-    print("No new leads today")
+    print(
+        "No new leads"
+    )
+
     exit()
 
 
@@ -211,66 +236,54 @@ new_leads.to_excel(
 )
 
 
-updated_seen = pd.DataFrame(
+pd.DataFrame(
     {
-        "job__": list(
-            seen_jobs.union(
-                set(new_leads["job__"])
+        "job__":
+        list(
+            seen.union(
+                set(
+                    new_leads["job__"]
+                )
             )
         )
     }
-)
-
-
-updated_seen.to_csv(
+).to_csv(
     SEEN_FILE,
     index=False
 )
 
 
 # =============================
-# SEND DISCORD
+# DISCORD
 # =============================
 
 message = (
-    "🏗️ **NYC Construction Leads**\n"
-    f"📅 {datetime.now().strftime('%d %B %Y')}\n\n"
+    "🏗️ **NYC Construction Leads**\n\n"
 )
 
 
 for _, row in new_leads.head(10).iterrows():
 
+
     address = (
         str(row.get("house__", ""))
-        + " "
-        + str(row.get("street_name", ""))
+        +
+        " "
+        +
+        str(row.get("street_name", ""))
     )
 
-    owner = row.get(
-        "owner_s_business_name",
-        "Unknown"
-    )
-
-    borough = row.get(
-        "borough",
-        ""
-    )
-
-    cost = row.get(
-        "initial_cost",
-        "Unknown"
-    )
 
     message += (
         f"🔥 Score: {row['lead_score']}\n"
         f"🏢 Type: {row.get('job_type')}\n"
-        f"📍 {address}, {borough}\n"
-        f"👤 {owner}\n"
-        f"💰 ${cost}\n\n"
+        f"📍 {address}\n"
+        f"💰 {row.get('initial_cost','Unknown')}\n\n"
     )
 
 
 if DISCORD_WEBHOOK:
+
 
     requests.post(
         DISCORD_WEBHOOK,
@@ -281,5 +294,5 @@ if DISCORD_WEBHOOK:
 
 
 print(
-    f"Sent {len(new_leads)} new leads to Discord"
+    f"SUCCESS: Sent {len(new_leads)} leads"
 )
