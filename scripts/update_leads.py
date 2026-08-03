@@ -20,7 +20,7 @@ DAYS_BACK = 7
 
 
 # =============================
-# DOWNLOAD NYC DOB DATA
+# DOWNLOAD DATA
 # =============================
 
 print("Downloading NYC DOB data...")
@@ -29,8 +29,7 @@ print("Downloading NYC DOB data...")
 response = requests.get(
     API_URL,
     params={
-        "$limit": 5000,
-        "$order": "latest_action_date DESC"
+        "$limit": 5000
     }
 )
 
@@ -49,13 +48,30 @@ print(
 
 
 if df.empty:
-    print("No data returned")
+    print("No records")
     exit()
 
 
 
 # =============================
-# FIX DATE FIELDS
+# SHOW RAW DATES
+# =============================
+
+print("\nRaw newest dates returned:")
+
+print(
+    df[
+        [
+            "pre__filing_date",
+            "latest_action_date"
+        ]
+    ].head(10)
+)
+
+
+
+# =============================
+# CONVERT DATES
 # =============================
 
 for col in [
@@ -71,8 +87,32 @@ for col in [
 
 
 
+print("\nConverted newest dates:")
+
+print(
+    df[
+        [
+            "pre__filing_date",
+            "latest_action_date"
+        ]
+    ].head(10)
+)
+
+
+
 # =============================
-# LAST 7 DAYS ONLY
+# SORT BY REAL DATE
+# =============================
+
+df = df.sort_values(
+    "latest_action_date",
+    ascending=False
+)
+
+
+
+# =============================
+# LAST 7 DAYS
 # =============================
 
 cutoff = (
@@ -94,18 +134,21 @@ df = df[
 
 
 print(
-    f"After 7 day filter: {len(df)}"
+    f"\nAfter 7 day filter: {len(df)}"
 )
 
 
+
 if df.empty:
+
     print("No recent permits")
+
     exit()
 
 
 
 # =============================
-# CONSTRUCTION FILTER
+# JOB TYPE FILTER
 # =============================
 
 df = df[
@@ -126,7 +169,7 @@ print(
 
 
 # =============================
-# REMOVE CLOSED JOBS
+# STATUS FILTER
 # =============================
 
 df = df[
@@ -144,30 +187,23 @@ print(
 )
 
 
-if df.empty:
-    print("No construction leads")
-    exit()
-
-
 
 # =============================
-# SCORE LEADS
+# SCORE
 # =============================
 
-def score_lead(row):
+def score(row):
 
-    score = 0
-
+    points = 0
 
     if row["job_type"] == "NB":
-        score += 100
+        points += 100
 
     elif row["job_type"] == "A1":
-        score += 70
+        points += 70
 
     elif row["job_type"] == "A2":
-        score += 40
-
+        points += 40
 
 
     try:
@@ -179,28 +215,26 @@ def score_lead(row):
             )
         )
 
-
         if cost >= 5000000:
-            score += 75
+            points += 75
 
         elif cost >= 1000000:
-            score += 50
+            points += 50
 
         elif cost >= 500000:
-            score += 25
-
+            points += 25
 
     except:
 
         pass
 
 
-    return score
+    return points
 
 
 
 df["lead_score"] = df.apply(
-    score_lead,
+    score,
     axis=1
 )
 
@@ -214,7 +248,7 @@ df = df.sort_values(
 
 
 # =============================
-# REMOVE ALREADY SENT JOBS
+# REMOVE OLD LEADS
 # =============================
 
 os.makedirs(
@@ -233,20 +267,18 @@ if os.path.exists(SEEN_FILE):
         SEEN_FILE
     )
 
-    seen_jobs = set(
+    seen = set(
         old["job__"].astype(str)
     )
 
 else:
 
-    seen_jobs = set()
+    seen = set()
 
 
 
 new_leads = df[
-    ~df["job__"].isin(
-        seen_jobs
-    )
+    ~df["job__"].isin(seen)
 ]
 
 
@@ -278,20 +310,17 @@ new_leads.to_excel(
 
 
 
-updated_seen = pd.DataFrame(
+pd.DataFrame(
     {
         "job__": list(
-            seen_jobs.union(
+            seen.union(
                 set(
                     new_leads["job__"]
                 )
             )
         )
     }
-)
-
-
-updated_seen.to_csv(
+).to_csv(
     SEEN_FILE,
     index=False
 )
@@ -299,12 +328,12 @@ updated_seen.to_csv(
 
 
 # =============================
-# DISCORD MESSAGE
+# DISCORD
 # =============================
 
 message = (
-    "🏗️ **NYC Construction Leads**\n"
-    f"📅 {datetime.now().strftime('%d/%m/%Y')}\n\n"
+    "🏗️ NYC Construction Leads\n"
+    f"{datetime.now().strftime('%d/%m/%Y')}\n\n"
 )
 
 
@@ -320,11 +349,11 @@ for _, row in new_leads.head(20).iterrows():
     message += (
 
         f"🔥 Score: {row['lead_score']}\n"
-        f"🏢 Type: {row.get('job_type')}\n"
+        f"🏢 {row.get('job_type')}\n"
         f"📍 {address}, {row.get('borough','')}\n"
-        f"👤 Owner: {row.get('owner_s_business_name','Unknown')}\n"
-        f"💰 Cost: ${row.get('initial_cost','Unknown')}\n"
-        f"🆔 Job: {row.get('job__')}\n\n"
+        f"👤 {row.get('owner_s_business_name','Unknown')}\n"
+        f"💰 ${row.get('initial_cost','Unknown')}\n"
+        f"🆔 {row.get('job__')}\n\n"
 
     )
 
