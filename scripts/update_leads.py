@@ -4,55 +4,49 @@ from datetime import datetime, timedelta
 import os
 
 
-# -----------------------------
+# =============================
 # SETTINGS
-# -----------------------------
+# =============================
 
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 
 OUTPUT_FILE = "data/nyc_construction_leads.xlsx"
 SEEN_FILE = "data/seen_jobs.csv"
 
-API_URL = "https://data.cityofnewyork.us/resource/w9ak-ipjd.json"
+API_URL = "https://data.cityofnewyork.us/resource/rvhx-8trz.json"
 
 
-# -----------------------------
-# DOWNLOAD DATA
-# -----------------------------
+# =============================
+# DOWNLOAD NYC DOB DATA
+# =============================
 
-print("Downloading NYC DOB permits...")
-
-
-params = {
-    "$limit": 5000,
-    "$order": "pre__filing_date DESC"
-}
-
+print("Downloading NYC DOB data...")
 
 response = requests.get(
     API_URL,
-    params=params
+    params={
+        "$limit": 5000
+    }
 )
 
 response.raise_for_status()
 
-data = response.json()
+records = response.json()
 
-
-df = pd.DataFrame(data)
+df = pd.DataFrame(records)
 
 
 if df.empty:
-    print("No data returned")
+    print("No data returned from NYC")
     exit()
 
 
 print(f"Downloaded {len(df)} records")
 
 
-# -----------------------------
+# =============================
 # DATE FILTER
-# -----------------------------
+# =============================
 
 if "pre__filing_date" in df.columns:
 
@@ -61,18 +55,16 @@ if "pre__filing_date" in df.columns:
         errors="coerce"
     )
 
-
     cutoff = datetime.now() - timedelta(days=30)
-
 
     df = df[
         df["pre__filing_date"] >= cutoff
     ]
 
 
-# -----------------------------
-# FILTER CONSTRUCTION TYPES
-# -----------------------------
+# =============================
+# JOB TYPE FILTER
+# =============================
 
 if "job_type" in df.columns:
 
@@ -86,9 +78,9 @@ if "job_type" in df.columns:
     ]
 
 
-# -----------------------------
-# FILTER ACTIVE JOBS
-# -----------------------------
+# =============================
+# STATUS FILTER
+# =============================
 
 if "job_status" in df.columns:
 
@@ -106,26 +98,23 @@ if "job_status" in df.columns:
 
 
 if df.empty:
-
     print("No matching construction leads")
     exit()
 
 
-# -----------------------------
-# CREATE LEAD SCORE
-# -----------------------------
+# =============================
+# SCORE LEADS
+# =============================
 
+def lead_score(row):
 
-def score(row):
-
-    points = 0
-
+    score = 0
 
     if row.get("job_type") == "NB":
-        points += 100
+        score += 100
 
-    elif row.get("job_type") == "ALT-1":
-        points += 70
+    if row.get("job_type") == "ALT-1":
+        score += 70
 
 
     try:
@@ -137,11 +126,11 @@ def score(row):
             )
         )
 
-        if cost > 1000000:
-            points += 50
+        if cost >= 1000000:
+            score += 50
 
-        elif cost > 500000:
-            points += 25
+        elif cost >= 500000:
+            score += 25
 
     except:
 
@@ -149,16 +138,15 @@ def score(row):
 
 
     if row.get("building_type"):
+        score += 10
 
-        points += 10
 
-
-    return points
+    return score
 
 
 
 df["lead_score"] = df.apply(
-    score,
+    lead_score,
     axis=1
 )
 
@@ -169,9 +157,9 @@ df = df.sort_values(
 )
 
 
-# -----------------------------
-# REMOVE OLD LEADS
-# -----------------------------
+# =============================
+# ONLY NEW JOBS
+# =============================
 
 os.makedirs(
     "data",
@@ -181,57 +169,53 @@ os.makedirs(
 
 if "job__" not in df.columns:
 
-    print("No job numbers found")
+    print("No job number field found")
     exit()
 
 
-
 df["job__"] = df["job__"].astype(str)
-
 
 
 if os.path.exists(SEEN_FILE):
 
     old = pd.read_csv(SEEN_FILE)
 
-    seen = set(
+    seen_jobs = set(
         old["job__"].astype(str)
     )
 
 else:
 
-    seen = set()
+    seen_jobs = set()
 
 
 
-new = df[
-    ~df["job__"].isin(seen)
+new_leads = df[
+    ~df["job__"].isin(seen_jobs)
 ]
 
 
-if new.empty:
+if new_leads.empty:
 
-    print("No new leads")
+    print("No new leads today")
     exit()
 
 
+# =============================
+# SAVE EXCEL
+# =============================
 
-# -----------------------------
-# SAVE FILES
-# -----------------------------
-
-new.to_excel(
+new_leads.to_excel(
     OUTPUT_FILE,
     index=False
 )
 
 
-
 updated_seen = pd.DataFrame(
     {
         "job__": list(
-            seen.union(
-                set(new["job__"])
+            seen_jobs.union(
+                set(new_leads["job__"])
             )
         )
     }
@@ -244,11 +228,9 @@ updated_seen.to_csv(
 )
 
 
-
-# -----------------------------
-# DISCORD
-# -----------------------------
-
+# =============================
+# SEND DISCORD
+# =============================
 
 message = (
     "🏗️ **NYC Construction Leads**\n"
@@ -256,9 +238,7 @@ message = (
 )
 
 
-
-for _, row in new.head(10).iterrows():
-
+for _, row in new_leads.head(10).iterrows():
 
     address = (
         str(row.get("house__", ""))
@@ -266,37 +246,31 @@ for _, row in new.head(10).iterrows():
         + str(row.get("street_name", ""))
     )
 
-
     owner = row.get(
         "owner_s_business_name",
         "Unknown"
     )
-
 
     borough = row.get(
         "borough",
         ""
     )
 
-
     cost = row.get(
         "initial_cost",
         "Unknown"
     )
 
-
     message += (
         f"🔥 Score: {row['lead_score']}\n"
-        f"🏢 {row.get('job_type')}\n"
+        f"🏢 Type: {row.get('job_type')}\n"
         f"📍 {address}, {borough}\n"
         f"👤 {owner}\n"
         f"💰 ${cost}\n\n"
     )
 
 
-
 if DISCORD_WEBHOOK:
-
 
     requests.post(
         DISCORD_WEBHOOK,
@@ -307,5 +281,5 @@ if DISCORD_WEBHOOK:
 
 
 print(
-    f"Sent {len(new)} new leads"
+    f"Sent {len(new_leads)} new leads to Discord"
 )
