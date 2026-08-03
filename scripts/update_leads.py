@@ -17,52 +17,16 @@ API_URL = "https://data.cityofnewyork.us/resource/rvhx-8trz.json"
 
 
 # =============================
-# DATE RANGE
+# DOWNLOAD DATA
 # =============================
 
-DAYS_BACK = 7
-
-cutoff = (
-    datetime.now()
-    -
-    timedelta(days=DAYS_BACK)
-)
-
-cutoff_string = cutoff.strftime(
-    "%m/%d/%Y"
-)
-
-
-print(
-    f"Looking for activity since {cutoff_string}"
-)
-
-
-
-# =============================
-# DOWNLOAD NYC DOB DATA
-# =============================
-
-print(
-    "Downloading NYC DOB data..."
-)
+print("Downloading NYC DOB data...")
 
 
 params = {
-
     "$limit": 5000,
-
-    "$order": "latest_action_date DESC",
-
-    "$where":
-        f"""
-        pre__filing_date >= '{cutoff_string}'
-        OR
-        latest_action_date >= '{cutoff_string}'
-        """
-
+    "$order": "latest_action_date DESC"
 }
-
 
 
 response = requests.get(
@@ -71,9 +35,7 @@ response = requests.get(
 )
 
 
-print(
-    response.url
-)
+print(response.url)
 
 
 response.raise_for_status()
@@ -84,25 +46,19 @@ df = pd.DataFrame(
 )
 
 
-
 print(
     f"Downloaded {len(df)} records"
 )
 
 
-
 if df.empty:
-
-    print(
-        "No recent permits"
-    )
-
+    print("No data returned")
     exit()
 
 
 
 # =============================
-# CLEAN DATES
+# DATE CLEANING
 # =============================
 
 for col in [
@@ -119,9 +75,43 @@ for col in [
         )
 
 
+# =============================
+# LAST 7 DAYS FILTER
+# =============================
+
+cutoff = (
+    datetime.now()
+    -
+    timedelta(days=7)
+)
+
+
+df = df[
+    (
+        df["pre__filing_date"] >= cutoff
+    )
+    |
+    (
+        df["latest_action_date"] >= cutoff
+    )
+]
+
+
+print(
+    f"After 7 day filter: {len(df)}"
+)
+
+
+
+if df.empty:
+
+    print("No recent permits")
+    exit()
+
+
 
 # =============================
-# JOB TYPE FILTER
+# CONSTRUCTION FILTER
 # =============================
 
 df = df[
@@ -142,10 +132,8 @@ print(
 
 
 # =============================
-# STATUS FILTER
+# REMOVE CLOSED JOBS
 # =============================
-
-# Remove closed jobs
 
 df = df[
     ~df["job_status"].isin(
@@ -165,10 +153,7 @@ print(
 
 if df.empty:
 
-    print(
-        "No construction leads"
-    )
-
+    print("No construction leads")
     exit()
 
 
@@ -228,12 +213,6 @@ def calculate_score(row):
         pass
 
 
-
-    # Recent movement bonus
-
-    score += 20
-
-
     return score
 
 
@@ -253,7 +232,7 @@ df = df.sort_values(
 
 
 # =============================
-# REMOVE ALREADY SENT JOBS
+# REMOVE PREVIOUSLY SENT
 # =============================
 
 os.makedirs(
@@ -301,6 +280,12 @@ if new_leads.empty:
 
 
 
+print(
+    f"New leads: {len(new_leads)}"
+)
+
+
+
 # =============================
 # SAVE EXCEL
 # =============================
@@ -330,7 +315,7 @@ pd.DataFrame(
 
 
 # =============================
-# DISCORD MESSAGE
+# DISCORD
 # =============================
 
 message = (
@@ -351,15 +336,10 @@ for _, row in new_leads.head(20).iterrows():
     message += (
 
         f"🔥 Score: {row['lead_score']}\n"
-
         f"🏢 Type: {row.get('job_type')}\n"
-
         f"📍 {address}, {row.get('borough','')}\n"
-
         f"👤 Owner: {row.get('owner_s_business_name','Unknown')}\n"
-
         f"💰 Cost: ${row.get('initial_cost','Unknown')}\n"
-
         f"🆔 Job: {row.get('job__')}\n\n"
 
     )
@@ -374,6 +354,7 @@ if DISCORD_WEBHOOK:
             "content": message
         }
     )
+
 
 
 print(
