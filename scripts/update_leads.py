@@ -17,18 +17,62 @@ API_URL = "https://data.cityofnewyork.us/resource/rvhx-8trz.json"
 
 
 # =============================
+# DATE RANGE
+# =============================
+
+DAYS_BACK = 7
+
+cutoff = (
+    datetime.now()
+    -
+    timedelta(days=DAYS_BACK)
+)
+
+cutoff_string = cutoff.strftime(
+    "%m/%d/%Y"
+)
+
+
+print(
+    f"Looking for activity since {cutoff_string}"
+)
+
+
+
+# =============================
 # DOWNLOAD NYC DOB DATA
 # =============================
 
-print("Downloading NYC DOB data...")
+print(
+    "Downloading NYC DOB data..."
+)
+
+
+params = {
+
+    "$limit": 5000,
+
+    "$order": "latest_action_date DESC",
+
+    "$where":
+        f"""
+        pre__filing_date >= '{cutoff_string}'
+        OR
+        latest_action_date >= '{cutoff_string}'
+        """
+
+}
+
 
 
 response = requests.get(
     API_URL,
-    params={
-        "$limit": 5000,
-        "$order": "pre__filing_date DESC"
-    }
+    params=params
+)
+
+
+print(
+    response.url
 )
 
 
@@ -40,11 +84,6 @@ df = pd.DataFrame(
 )
 
 
-if df.empty:
-
-    print("No data returned")
-    exit()
-
 
 print(
     f"Downloaded {len(df)} records"
@@ -52,47 +91,38 @@ print(
 
 
 
+if df.empty:
+
+    print(
+        "No recent permits"
+    )
+
+    exit()
+
+
+
 # =============================
-# DATE FILTER
+# CLEAN DATES
 # =============================
 
-df["pre__filing_date"] = pd.to_datetime(
-    df["pre__filing_date"],
-    format="%m/%d/%Y",
-    errors="coerce"
-)
+for col in [
+    "pre__filing_date",
+    "latest_action_date"
+]:
 
+    if col in df.columns:
 
-cutoff = (
-    datetime.now()
-    -
-    timedelta(days=365)
-)
-
-
-df = df[
-    df["pre__filing_date"].notna()
-]
-
-
-df = df[
-    df["pre__filing_date"] >= cutoff
-]
-
-
-print(
-    f"After date filter: {len(df)}"
-)
+        df[col] = pd.to_datetime(
+            df[col],
+            format="%m/%d/%Y",
+            errors="coerce"
+        )
 
 
 
 # =============================
 # JOB TYPE FILTER
 # =============================
-
-# NB = New Building
-# A1 = Major Alteration
-# A2 = Alteration
 
 df = df[
     df["job_type"].isin(
@@ -115,7 +145,7 @@ print(
 # STATUS FILTER
 # =============================
 
-# Remove closed / withdrawn
+# Remove closed jobs
 
 df = df[
     ~df["job_status"].isin(
@@ -135,13 +165,16 @@ print(
 
 if df.empty:
 
-    print("No leads")
+    print(
+        "No construction leads"
+    )
+
     exit()
 
 
 
 # =============================
-# LEAD SCORING
+# SCORE LEADS
 # =============================
 
 def calculate_score(row):
@@ -196,6 +229,11 @@ def calculate_score(row):
 
 
 
+    # Recent movement bonus
+
+    score += 20
+
+
     return score
 
 
@@ -204,6 +242,7 @@ df["lead_score"] = df.apply(
     calculate_score,
     axis=1
 )
+
 
 
 df = df.sort_values(
@@ -251,6 +290,7 @@ new_leads = df[
 ]
 
 
+
 if new_leads.empty:
 
     print(
@@ -272,7 +312,7 @@ new_leads.to_excel(
 
 
 
-updated_seen = pd.DataFrame(
+pd.DataFrame(
     {
         "job__": list(
             seen_jobs.union(
@@ -282,10 +322,7 @@ updated_seen = pd.DataFrame(
             )
         )
     }
-)
-
-
-updated_seen.to_csv(
+).to_csv(
     SEEN_FILE,
     index=False
 )
@@ -293,7 +330,7 @@ updated_seen.to_csv(
 
 
 # =============================
-# DISCORD
+# DISCORD MESSAGE
 # =============================
 
 message = (
@@ -303,40 +340,27 @@ message = (
 
 
 
-for _, row in new_leads.head(15).iterrows():
+for _, row in new_leads.head(20).iterrows():
 
     address = (
-        str(
-            row.get(
-                "house__",
-                ""
-            )
-        )
-        +
-        " "
-        +
-        str(
-            row.get(
-                "street_name",
-                ""
-            )
-        )
-    )
-
-
-    owner = row.get(
-        "owner_s_business_name",
-        "Unknown"
+        f"{row.get('house__','')} "
+        f"{row.get('street_name','')}"
     )
 
 
     message += (
 
         f"🔥 Score: {row['lead_score']}\n"
+
         f"🏢 Type: {row.get('job_type')}\n"
+
         f"📍 {address}, {row.get('borough','')}\n"
-        f"👤 Owner: {owner}\n"
-        f"💰 Cost: ${row.get('initial_cost','Unknown')}\n\n"
+
+        f"👤 Owner: {row.get('owner_s_business_name','Unknown')}\n"
+
+        f"💰 Cost: ${row.get('initial_cost','Unknown')}\n"
+
+        f"🆔 Job: {row.get('job__')}\n\n"
 
     )
 
