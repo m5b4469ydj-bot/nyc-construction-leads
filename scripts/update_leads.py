@@ -26,9 +26,11 @@ print("Downloading NYC DOB data...")
 response = requests.get(
     API_URL,
     params={
-        "$limit": 5000
+        "$limit": 5000,
+        "$order": "pre__filing_date DESC"
     }
 )
+
 
 response.raise_for_status()
 
@@ -39,6 +41,7 @@ df = pd.DataFrame(
 
 
 if df.empty:
+
     print("No data returned")
     exit()
 
@@ -48,8 +51,9 @@ print(
 )
 
 
+
 # =============================
-# FIX DATE FORMAT
+# DATE FILTER
 # =============================
 
 df["pre__filing_date"] = pd.to_datetime(
@@ -59,13 +63,16 @@ df["pre__filing_date"] = pd.to_datetime(
 )
 
 
-# Keep only recent filings
-
 cutoff = (
     datetime.now()
     -
-    timedelta(days=30)
+    timedelta(days=365)
 )
+
+
+df = df[
+    df["pre__filing_date"].notna()
+]
 
 
 df = df[
@@ -78,9 +85,14 @@ print(
 )
 
 
+
 # =============================
 # JOB TYPE FILTER
 # =============================
+
+# NB = New Building
+# A1 = Major Alteration
+# A2 = Alteration
 
 df = df[
     df["job_type"].isin(
@@ -98,11 +110,12 @@ print(
 )
 
 
+
 # =============================
 # STATUS FILTER
 # =============================
 
-# Remove closed/withdrawn jobs
+# Remove closed / withdrawn
 
 df = df[
     ~df["job_status"].isin(
@@ -119,14 +132,16 @@ print(
 )
 
 
+
 if df.empty:
+
     print("No leads")
     exit()
 
 
 
 # =============================
-# SCORE LEADS
+# LEAD SCORING
 # =============================
 
 def calculate_score(row):
@@ -135,13 +150,19 @@ def calculate_score(row):
 
 
     if row["job_type"] == "NB":
+
         score += 100
 
+
     elif row["job_type"] == "A1":
+
         score += 70
 
+
     elif row["job_type"] == "A2":
+
         score += 40
+
 
 
     try:
@@ -155,18 +176,24 @@ def calculate_score(row):
 
 
         if cost >= 5000000:
+
             score += 75
 
+
         elif cost >= 1000000:
+
             score += 50
 
+
         elif cost >= 500000:
+
             score += 25
 
 
     except:
 
         pass
+
 
 
     return score
@@ -210,6 +237,7 @@ if os.path.exists(SEEN_FILE):
         old["job__"].astype(str)
     )
 
+
 else:
 
     seen_jobs = set()
@@ -243,6 +271,7 @@ new_leads.to_excel(
 )
 
 
+
 updated_seen = pd.DataFrame(
     {
         "job__": list(
@@ -264,7 +293,7 @@ updated_seen.to_csv(
 
 
 # =============================
-# SEND DISCORD
+# DISCORD
 # =============================
 
 message = (
@@ -273,8 +302,8 @@ message = (
 )
 
 
-for _, row in new_leads.head(15).iterrows():
 
+for _, row in new_leads.head(15).iterrows():
 
     address = (
         str(
