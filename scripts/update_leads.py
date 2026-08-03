@@ -1,12 +1,8 @@
 import requests
 import pandas as pd
-from datetime import datetime, timedelta
+from datetime import datetime
 import os
 
-
-# =============================
-# SETTINGS
-# =============================
 
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 
@@ -15,10 +11,6 @@ SEEN_FILE = "data/seen_jobs.csv"
 
 API_URL = "https://data.cityofnewyork.us/resource/rvhx-8trz.json"
 
-
-# =============================
-# DOWNLOAD NYC DOB DATA
-# =============================
 
 print("Downloading NYC DOB data...")
 
@@ -35,15 +27,7 @@ response = requests.get(
 response.raise_for_status()
 
 
-df = pd.DataFrame(
-    response.json()
-)
-
-
-if df.empty:
-
-    print("No data returned")
-    exit()
+df = pd.DataFrame(response.json())
 
 
 print(
@@ -51,42 +35,58 @@ print(
 )
 
 
+if df.empty:
+    print("No data")
+    exit()
+
+
 # =============================
-# CLEAN DATES
+# CHECK DATES
 # =============================
 
-if "pre__filing_date" in df.columns:
+print("\nLatest filing dates:")
 
-    df["pre__filing_date"] = pd.to_datetime(
-        df["pre__filing_date"],
-        errors="coerce"
-    )
-
-
-cutoff = (
-    datetime.now()
-    -
-    timedelta(days=90)
+print(
+    df[
+        [
+            "pre__filing_date",
+            "latest_action_date"
+        ]
+    ]
+    .head(10)
 )
 
 
-df = df[
-    df["pre__filing_date"].notna()
-]
+# Convert date
 
-
-df = df[
-    df["pre__filing_date"] >= cutoff
-]
+df["pre__filing_date"] = pd.to_datetime(
+    df["pre__filing_date"],
+    errors="coerce"
+)
 
 
 print(
-    f"After date filter: {len(df)}"
+    "\nValid dates:"
+)
+
+print(
+    df["pre__filing_date"]
+    .notna()
+    .sum()
 )
 
 
 # =============================
-# FILTER JOB TYPES
+# KEEP RECENT RECORDS
+# =============================
+
+# Instead of filtering by broken dates,
+# just use the newest 5000 records
+# returned by NYC.
+
+
+# =============================
+# JOB FILTER
 # =============================
 
 df = df[
@@ -106,20 +106,14 @@ print(
 
 
 # =============================
-# FILTER STATUS
+# REMOVE CLOSED JOBS
 # =============================
-
-# NYC codes:
-# Keep active applications
-# Remove closed/withdrawn
-
 
 df = df[
     ~df["job_status"].isin(
         [
             "X",
-            "D",
-            "U"
+            "D"
         ]
     )
 ]
@@ -136,34 +130,24 @@ if df.empty:
     exit()
 
 
+
 # =============================
-# SCORE LEADS
+# SCORE
 # =============================
 
-def calculate_score(row):
+def score(row):
 
     score = 0
 
 
-    job = row.get(
-        "job_type"
-    )
-
-
-    if job == "NB":
-
+    if row["job_type"] == "NB":
         score += 100
 
-
-    elif job == "A1":
-
+    elif row["job_type"] == "A1":
         score += 70
 
-
-    elif job == "A2":
-
+    else:
         score += 40
-
 
 
     try:
@@ -175,33 +159,17 @@ def calculate_score(row):
             )
         )
 
-
-        if cost >= 5000000:
-
+        if cost > 5000000:
             score += 75
 
-
-        elif cost >= 1000000:
-
+        elif cost > 1000000:
             score += 50
 
-
-        elif cost >= 500000:
-
+        elif cost > 500000:
             score += 25
 
-
     except:
-
         pass
-
-
-
-    if row.get(
-        "building_type"
-    ):
-
-        score += 10
 
 
     return score
@@ -209,7 +177,7 @@ def calculate_score(row):
 
 
 df["lead_score"] = df.apply(
-    calculate_score,
+    score,
     axis=1
 )
 
@@ -221,7 +189,7 @@ df = df.sort_values(
 
 
 # =============================
-# REMOVE PREVIOUSLY SENT JOBS
+# ONLY NEW JOBS
 # =============================
 
 os.makedirs(
@@ -233,37 +201,28 @@ os.makedirs(
 df["job__"] = df["job__"].astype(str)
 
 
-
 if os.path.exists(SEEN_FILE):
 
-    old = pd.read_csv(
-        SEEN_FILE
-    )
+    old = pd.read_csv(SEEN_FILE)
 
-    seen_jobs = set(
+    seen = set(
         old["job__"].astype(str)
     )
 
-
 else:
 
-    seen_jobs = set()
+    seen = set()
 
 
 
-new_leads = df[
-    ~df["job__"].isin(
-        seen_jobs
-    )
+new = df[
+    ~df["job__"].isin(seen)
 ]
 
 
-if new_leads.empty:
+if new.empty:
 
-    print(
-        "No new leads today"
-    )
-
+    print("No new leads")
     exit()
 
 
@@ -272,27 +231,21 @@ if new_leads.empty:
 # SAVE EXCEL
 # =============================
 
-new_leads.to_excel(
+new.to_excel(
     OUTPUT_FILE,
     index=False
 )
 
 
-
-all_seen = pd.DataFrame(
+pd.DataFrame(
     {
         "job__": list(
-            seen_jobs.union(
-                set(
-                    new_leads["job__"]
-                )
+            seen.union(
+                set(new["job__"])
             )
         )
     }
-)
-
-
-all_seen.to_csv(
+).to_csv(
     SEEN_FILE,
     index=False
 )
@@ -300,64 +253,22 @@ all_seen.to_csv(
 
 
 # =============================
-# DISCORD MESSAGE
+# DISCORD
 # =============================
 
 message = (
-    "🏗️ **NYC Construction Leads**\n"
-    f"📅 {datetime.now().strftime('%d %B %Y')}\n\n"
+    "🏗️ NYC Construction Leads\n\n"
 )
 
 
-
-for _, row in new_leads.head(15).iterrows():
-
-
-    address = (
-        str(
-            row.get(
-                "house__",
-                ""
-            )
-        )
-        +
-        " "
-        +
-        str(
-            row.get(
-                "street_name",
-                ""
-            )
-        )
-    )
-
-
-    owner = row.get(
-        "owner_s_business_name",
-        "Unknown"
-    )
-
-
-    cost = row.get(
-        "initial_cost",
-        "Unknown"
-    )
-
+for _, row in new.head(15).iterrows():
 
     message += (
-
         f"🔥 Score: {row['lead_score']}\n"
-
-        f"🏢 Type: {row.get('job_type')}\n"
-
-        f"📍 {address}, {row.get('borough','')}\n"
-
-        f"👤 Owner: {owner}\n"
-
-        f"💰 Cost: ${cost}\n\n"
-
+        f"🏢 {row['job_type']}\n"
+        f"📍 {row.get('house__','')} {row.get('street_name','')}\n"
+        f"💰 {row.get('initial_cost','Unknown')}\n\n"
     )
-
 
 
 if DISCORD_WEBHOOK:
@@ -370,7 +281,6 @@ if DISCORD_WEBHOOK:
     )
 
 
-
 print(
-    f"SUCCESS - Sent {len(new_leads)} leads"
+    f"SUCCESS - Sent {len(new)} leads"
 )
