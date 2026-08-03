@@ -13,29 +13,34 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 OUTPUT_FILE = "data/nyc_construction_leads.xlsx"
 SEEN_FILE = "data/seen_jobs.csv"
 
+
+# NYC DOB Job Applications dataset
 API_URL = "https://data.cityofnewyork.us/resource/rvhx-8trz.json"
 
 
+
 # =============================
-# DOWNLOAD DATA
+# SETTINGS
+# =============================
+
+DAYS_BACK = 7
+
+
+
+# =============================
+# DOWNLOAD NYC DATA
 # =============================
 
 print("Downloading NYC DOB data...")
 
 
-params = {
-    "$limit": 5000,
-    "$order": "latest_action_date DESC"
-}
-
-
 response = requests.get(
     API_URL,
-    params=params
+    params={
+        "$limit": 5000,
+        "$order": "dobrundate DESC"
+    }
 )
-
-
-print(response.url)
 
 
 response.raise_for_status()
@@ -52,38 +57,42 @@ print(
 
 
 if df.empty:
+
     print("No data returned")
+
     exit()
 
 
 
 # =============================
-# DATE CLEANING
+# DATE CONVERSION
 # =============================
 
-for col in [
+for column in [
     "pre__filing_date",
-    "latest_action_date"
+    "latest_action_date",
+    "dobrundate"
 ]:
 
-    if col in df.columns:
+    if column in df.columns:
 
-        df[col] = pd.to_datetime(
-            df[col],
-            format="%m/%d/%Y",
+        df[column] = pd.to_datetime(
+            df[column],
             errors="coerce"
         )
 
 
+
 # =============================
-# LAST 7 DAYS FILTER
+# LAST 7 DAYS
 # =============================
 
 cutoff = (
     datetime.now()
     -
-    timedelta(days=7)
+    timedelta(days=DAYS_BACK)
 )
+
 
 
 df = df[
@@ -93,6 +102,10 @@ df = df[
     |
     (
         df["latest_action_date"] >= cutoff
+    )
+    |
+    (
+        df["dobrundate"] >= cutoff
     )
 ]
 
@@ -106,12 +119,13 @@ print(
 if df.empty:
 
     print("No recent permits")
+
     exit()
 
 
 
 # =============================
-# CONSTRUCTION FILTER
+# CONSTRUCTION TYPES
 # =============================
 
 df = df[
@@ -132,7 +146,7 @@ print(
 
 
 # =============================
-# REMOVE CLOSED JOBS
+# REMOVE CLOSED
 # =============================
 
 df = df[
@@ -153,33 +167,34 @@ print(
 
 if df.empty:
 
-    print("No construction leads")
+    print("No leads")
+
     exit()
 
 
 
 # =============================
-# SCORE LEADS
+# LEAD SCORING
 # =============================
 
-def calculate_score(row):
+def score(row):
 
-    score = 0
+    points = 0
 
 
     if row["job_type"] == "NB":
 
-        score += 100
+        points += 100
 
 
     elif row["job_type"] == "A1":
 
-        score += 70
+        points += 70
 
 
     elif row["job_type"] == "A2":
 
-        score += 40
+        points += 40
 
 
 
@@ -195,17 +210,17 @@ def calculate_score(row):
 
         if cost >= 5000000:
 
-            score += 75
+            points += 75
 
 
         elif cost >= 1000000:
 
-            score += 50
+            points += 50
 
 
         elif cost >= 500000:
 
-            score += 25
+            points += 25
 
 
     except:
@@ -213,12 +228,13 @@ def calculate_score(row):
         pass
 
 
-    return score
+
+    return points
 
 
 
 df["lead_score"] = df.apply(
-    calculate_score,
+    score,
     axis=1
 )
 
@@ -232,13 +248,14 @@ df = df.sort_values(
 
 
 # =============================
-# REMOVE PREVIOUSLY SENT
+# REMOVE DUPLICATES
 # =============================
 
 os.makedirs(
     "data",
     exist_ok=True
 )
+
 
 
 df["job__"] = df["job__"].astype(str)
@@ -251,21 +268,18 @@ if os.path.exists(SEEN_FILE):
         SEEN_FILE
     )
 
-    seen_jobs = set(
+    seen = set(
         old["job__"].astype(str)
     )
 
-
 else:
 
-    seen_jobs = set()
+    seen = set()
 
 
 
 new_leads = df[
-    ~df["job__"].isin(
-        seen_jobs
-    )
+    ~df["job__"].isin(seen)
 ]
 
 
@@ -300,7 +314,7 @@ new_leads.to_excel(
 pd.DataFrame(
     {
         "job__": list(
-            seen_jobs.union(
+            seen.union(
                 set(
                     new_leads["job__"]
                 )
@@ -319,8 +333,8 @@ pd.DataFrame(
 # =============================
 
 message = (
-    "🏗️ **NYC Construction Leads**\n"
-    f"📅 {datetime.now().strftime('%d %B %Y')}\n\n"
+    "🏗️ NYC Construction Leads\n"
+    f"{datetime.now().strftime('%d/%m/%Y')}\n\n"
 )
 
 
@@ -336,11 +350,11 @@ for _, row in new_leads.head(20).iterrows():
     message += (
 
         f"🔥 Score: {row['lead_score']}\n"
-        f"🏢 Type: {row.get('job_type')}\n"
+        f"🏢 {row.get('job_type')}\n"
         f"📍 {address}, {row.get('borough','')}\n"
-        f"👤 Owner: {row.get('owner_s_business_name','Unknown')}\n"
-        f"💰 Cost: ${row.get('initial_cost','Unknown')}\n"
-        f"🆔 Job: {row.get('job__')}\n\n"
+        f"👤 {row.get('owner_s_business_name','Unknown')}\n"
+        f"💰 ${row.get('initial_cost','Unknown')}\n"
+        f"🆔 {row.get('job__')}\n\n"
 
     )
 
@@ -354,7 +368,6 @@ if DISCORD_WEBHOOK:
             "content": message
         }
     )
-
 
 
 print(
