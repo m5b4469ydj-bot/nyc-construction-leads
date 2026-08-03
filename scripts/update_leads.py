@@ -4,10 +4,6 @@ from datetime import datetime, timedelta
 import os
 
 
-# =============================
-# SETTINGS
-# =============================
-
 API_URL = "https://data.cityofnewyork.us/resource/w9ak-ipjd.json"
 
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
@@ -15,25 +11,49 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 OUTPUT_FILE = "data/nyc_construction_leads.xlsx"
 SEEN_FILE = "data/seen_jobs.csv"
 
-DAYS_BACK = 7
-
 ID_COLUMN = "job_filing_number"
 
 
+DAYS_BACK = 7
 
-# =============================
-# DOWNLOAD NYC DOB DATA
-# =============================
+
 
 print("Downloading NYC DOB data...")
 
 
+cutoff = (
+    datetime.now()
+    -
+    timedelta(days=DAYS_BACK)
+)
+
+
+cutoff_string = cutoff.strftime(
+    "%Y-%m-%dT00:00:00"
+)
+
+
+
+params = {
+
+    "$limit": 5000,
+
+    "$order":
+        "current_status_date DESC",
+
+    "$where":
+        f"""
+        current_status_date >= '{cutoff_string}'
+        OR
+        filing_date >= '{cutoff_string}'
+        """
+}
+
+
+
 response = requests.get(
     API_URL,
-    params={
-        "$limit": 5000,
-        "$order": "current_status_date DESC"
-    }
+    params=params
 )
 
 
@@ -45,96 +65,9 @@ df = pd.DataFrame(
 )
 
 
+
 print(
     f"Downloaded {len(df)} records"
-)
-
-
-if df.empty:
-    print("No data returned")
-    exit()
-
-
-
-# =============================
-# DATE CLEANING
-# =============================
-
-for col in [
-    "filing_date",
-    "current_status_date"
-]:
-
-    if col in df.columns:
-
-        df[col] = pd.to_datetime(
-            df[col],
-            errors="coerce"
-        )
-
-
-
-print("\nDate check:")
-
-print(
-    df[
-        [
-            "filing_date",
-            "current_status_date"
-        ]
-    ].head(10)
-)
-
-
-
-# =============================
-# ONLY LAST 7 DAYS
-# =============================
-
-cutoff = (
-    datetime.now()
-    -
-    timedelta(days=DAYS_BACK)
-)
-
-
-
-df["recent_filing"] = (
-    df["filing_date"].notna()
-    &
-    (df["filing_date"] >= cutoff)
-)
-
-
-df["recent_status"] = (
-    df["current_status_date"].notna()
-    &
-    (df["current_status_date"] >= cutoff)
-)
-
-
-
-df["lead_type"] = "ACTIVE PROJECT"
-
-
-
-df.loc[
-    df["recent_filing"],
-    "lead_type"
-] = "NEW FILING"
-
-
-
-df = df[
-    df["recent_filing"]
-    |
-    df["recent_status"]
-]
-
-
-
-print(
-    f"After 7 day filter: {len(df)}"
 )
 
 
@@ -150,46 +83,65 @@ if df.empty:
 
 
 # =============================
-# STATUS FILTER
+# CLEAN DATES
 # =============================
 
-bad_status = [
-    "Withdrawn",
-    "Rejected",
-    "Denied"
-]
+
+for col in [
+    "filing_date",
+    "current_status_date"
+]:
+
+    if col in df.columns:
+
+        df[col] = pd.to_datetime(
+            df[col],
+            errors="coerce"
+        )
 
 
-if "filing_status" in df.columns:
 
-    df = df[
-        ~df["filing_status"]
-        .isin(bad_status)
-    ]
-
-
+print("\nDates returned:")
 
 print(
-    f"After status filter: {len(df)}"
+    df[
+        [
+            "filing_date",
+            "current_status_date"
+        ]
+    ].head(10)
 )
 
 
 
 # =============================
-# LEAD SCORE
+# FILTER
 # =============================
 
-def calculate_score(row):
 
-    score = 0
+df = df[
+    (
+        df["filing_date"].notna()
+        |
+        df["current_status_date"].notna()
+    )
+]
 
 
-    if row["lead_type"] == "NEW FILING":
-        score += 50
+print(
+    f"After date filter: {len(df)}"
+)
 
-    else:
-        score += 25
 
+
+# =============================
+# SCORE
+# =============================
+
+
+def score(row):
+
+    points = 0
 
 
     status = str(
@@ -201,12 +153,11 @@ def calculate_score(row):
 
 
     if "Permit" in status:
-        score += 50
+        points += 50
 
 
     if "Approved" in status:
-        score += 40
-
+        points += 30
 
 
     try:
@@ -219,27 +170,23 @@ def calculate_score(row):
         )
 
 
-        if cost >= 5000000:
-            score += 100
+        if cost > 5000000:
+            points += 100
 
-        elif cost >= 1000000:
-            score += 70
-
-        elif cost >= 500000:
-            score += 40
-
+        elif cost > 1000000:
+            points += 60
 
     except:
 
         pass
 
 
-    return score
+    return points
 
 
 
 df["lead_score"] = df.apply(
-    calculate_score,
+    score,
     axis=1
 )
 
@@ -253,19 +200,13 @@ df = df.sort_values(
 
 
 # =============================
-# DUPLICATE CONTROL
+# SEEN JOBS
 # =============================
+
 
 os.makedirs(
     "data",
     exist_ok=True
-)
-
-
-
-df[ID_COLUMN] = (
-    df[ID_COLUMN]
-    .astype(str)
 )
 
 
@@ -280,7 +221,6 @@ if os.path.exists(SEEN_FILE):
         SEEN_FILE
     )
 
-
     if ID_COLUMN in old.columns:
 
         seen = set(
@@ -290,14 +230,21 @@ if os.path.exists(SEEN_FILE):
 
 
 
-new_leads = df[
+df[ID_COLUMN] = (
+    df[ID_COLUMN]
+    .astype(str)
+)
+
+
+
+new = df[
     ~df[ID_COLUMN]
     .isin(seen)
 ]
 
 
 
-if new_leads.empty:
+if new.empty:
 
     print(
         "No new leads today"
@@ -308,16 +255,17 @@ if new_leads.empty:
 
 
 print(
-    f"New leads: {len(new_leads)}"
+    f"New leads: {len(new)}"
 )
 
 
 
 # =============================
-# SAVE EXCEL
+# SAVE
 # =============================
 
-new_leads.to_excel(
+
+new.to_excel(
     OUTPUT_FILE,
     index=False
 )
@@ -325,7 +273,7 @@ new_leads.to_excel(
 
 
 seen.update(
-    new_leads[ID_COLUMN]
+    new[ID_COLUMN]
     .tolist()
 )
 
@@ -344,33 +292,24 @@ pd.DataFrame(
 
 
 # =============================
-# DISCORD TOP 20
+# DISCORD
 # =============================
+
 
 message = (
     "🏗️ NYC Construction Leads\n"
-    f"{datetime.now().strftime('%d/%m/%Y')}\n"
-    f"New leads: {len(new_leads)}\n\n"
+    f"New leads: {len(new)}\n\n"
 )
 
 
 
-for _, row in new_leads.head(20).iterrows():
-
-    address = (
-        f"{row.get('house_no','')} "
-        f"{row.get('street_name','')}"
-    )
-
+for _, r in new.head(20).iterrows():
 
     message += (
-        f"🔥 Score: {row['lead_score']}\n"
-        f"🆕 {row['lead_type']}\n"
-        f"📍 {address}, {row.get('borough','')}\n"
-        f"👤 {row.get('owner_s_business_name','Unknown')}\n"
-        f"💰 Cost: {row.get('initial_cost','Unknown')}\n"
-        f"📌 {row.get('filing_status','Unknown')}\n"
-        f"🆔 {row[ID_COLUMN]}\n\n"
+        f"🔥 {r['lead_score']} pts\n"
+        f"📍 {r.get('house_no','')} {r.get('street_name','')}\n"
+        f"🏢 {r.get('owner_s_business_name','Unknown')}\n"
+        f"💰 {r.get('initial_cost','Unknown')}\n\n"
     )
 
 
@@ -385,6 +324,7 @@ if DISCORD_WEBHOOK:
     )
 
 
+
 print(
-    f"SUCCESS - Sent {len(new_leads)} leads"
+    f"SUCCESS - Sent {len(new)} leads"
 )
