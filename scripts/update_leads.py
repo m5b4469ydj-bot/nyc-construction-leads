@@ -4,6 +4,10 @@ from datetime import datetime, timedelta
 import os
 
 
+# =============================
+# SETTINGS
+# =============================
+
 API_URL = "https://data.cityofnewyork.us/resource/w9ak-ipjd.json"
 
 DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
@@ -11,14 +15,69 @@ DISCORD_WEBHOOK = os.environ.get("DISCORD_WEBHOOK")
 OUTPUT_FILE = "data/nyc_construction_leads.xlsx"
 SEEN_FILE = "data/seen_jobs.csv"
 
+DAYS_BACK = 7
+
 ID_COLUMN = "job_filing_number"
 
 
-DAYS_BACK = 7
+
+# =============================
+# FRIENDLY TRANSLATIONS
+# =============================
+
+BOROUGH_MAP = {
+    "MN": "Manhattan",
+    "BK": "Brooklyn",
+    "BX": "Bronx",
+    "QN": "Queens",
+    "SI": "Staten Island"
+}
+
+
+JOB_TYPE_MAP = {
+
+    "NB": "New Building",
+
+    "A1": "Major Alteration",
+
+    "A2": "Alteration",
+
+    "A3": "Minor Alteration",
+
+    "DM": "Demolition",
+
+    "SC": "Subdivision",
+
+    "SI": "Sign Work"
+}
+
+
+STATUS_MAP = {
+
+    "Approved":
+        "Approved",
+
+    "LOC Issued":
+        "Permit Issued",
+
+    "Permit Entire":
+        "Permit Issued",
+
+    "Filed":
+        "Application Filed"
+}
 
 
 
-print("Downloading NYC DOB data...")
+# =============================
+# DOWNLOAD NEW FILINGS
+# =============================
+
+
+print(
+    "Downloading NYC DOB filings..."
+)
+
 
 
 cutoff = (
@@ -39,14 +98,11 @@ params = {
     "$limit": 5000,
 
     "$order":
-        "current_status_date DESC",
+        "filing_date DESC",
 
     "$where":
-        f"""
-        current_status_date >= '{cutoff_string}'
-        OR
-        filing_date >= '{cutoff_string}'
-        """
+        f"filing_date >= '{cutoff_string}'"
+
 }
 
 
@@ -60,6 +116,7 @@ response = requests.get(
 response.raise_for_status()
 
 
+
 df = pd.DataFrame(
     response.json()
 )
@@ -67,7 +124,7 @@ df = pd.DataFrame(
 
 
 print(
-    f"Downloaded {len(df)} records"
+    f"Downloaded {len(df)} filings"
 )
 
 
@@ -75,7 +132,7 @@ print(
 if df.empty:
 
     print(
-        "No recent permits"
+        "No new filings"
     )
 
     exit()
@@ -87,126 +144,40 @@ if df.empty:
 # =============================
 
 
-for col in [
-    "filing_date",
-    "current_status_date"
-]:
-
-    if col in df.columns:
-
-        df[col] = pd.to_datetime(
-            df[col],
-            errors="coerce"
-        )
-
-
-
-print("\nDates returned:")
-
-print(
-    df[
-        [
-            "filing_date",
-            "current_status_date"
-        ]
-    ].head(10)
+df["filing_date"] = pd.to_datetime(
+    df["filing_date"],
+    errors="coerce"
 )
 
-
-
-# =============================
-# FILTER
-# =============================
 
 
 df = df[
-    (
-        df["filing_date"].notna()
-        |
-        df["current_status_date"].notna()
-    )
+    df["filing_date"].notna()
 ]
 
 
+
 print(
-    f"After date filter: {len(df)}"
+    f"Valid filings: {len(df)}"
 )
 
 
 
 # =============================
-# SCORE
-# =============================
-
-
-def score(row):
-
-    points = 0
-
-
-    status = str(
-        row.get(
-            "filing_status",
-            ""
-        )
-    )
-
-
-    if "Permit" in status:
-        points += 50
-
-
-    if "Approved" in status:
-        points += 30
-
-
-    try:
-
-        cost = float(
-            row.get(
-                "initial_cost",
-                0
-            )
-        )
-
-
-        if cost > 5000000:
-            points += 100
-
-        elif cost > 1000000:
-            points += 60
-
-    except:
-
-        pass
-
-
-    return points
-
-
-
-df["lead_score"] = df.apply(
-    score,
-    axis=1
-)
-
-
-
-df = df.sort_values(
-    "lead_score",
-    ascending=False
-)
-
-
-
-# =============================
-# SEEN JOBS
+# REMOVE OLD JOBS
 # =============================
 
 
 os.makedirs(
     "data",
     exist_ok=True
+)
+
+
+
+df[ID_COLUMN] = (
+    df[ID_COLUMN]
+    .astype(str)
 )
 
 
@@ -230,24 +201,17 @@ if os.path.exists(SEEN_FILE):
 
 
 
-df[ID_COLUMN] = (
-    df[ID_COLUMN]
-    .astype(str)
-)
-
-
-
-new = df[
+new_leads = df[
     ~df[ID_COLUMN]
     .isin(seen)
 ]
 
 
 
-if new.empty:
+if new_leads.empty:
 
     print(
-        "No new leads today"
+        "No new filings today"
     )
 
     exit()
@@ -255,25 +219,200 @@ if new.empty:
 
 
 print(
-    f"New leads: {len(new)}"
+    f"New filings: {len(new_leads)}"
 )
 
 
 
 # =============================
-# SAVE
+# FRIENDLY FIELDS
 # =============================
 
 
-new.to_excel(
+new_leads["Borough"] = (
+    new_leads["borough"]
+    .map(BOROUGH_MAP)
+    .fillna(
+        new_leads["borough"]
+    )
+)
+
+
+
+new_leads["Project Type"] = (
+    new_leads["job_type"]
+    .map(JOB_TYPE_MAP)
+    .fillna(
+        new_leads["job_type"]
+    )
+)
+
+
+
+new_leads["Status"] = (
+    new_leads["filing_status"]
+    .map(STATUS_MAP)
+    .fillna(
+        new_leads["filing_status"]
+    )
+)
+
+
+
+new_leads["Address"] = (
+
+    new_leads["house_no"]
+    .astype(str)
+
+    + " "
+
+    + new_leads["street_name"]
+
+    + ", "
+
+    + new_leads["Borough"]
+
+)
+
+
+
+# =============================
+# LEAD SCORE
+# =============================
+
+
+def score(row):
+
+    points = 0
+
+
+    project = str(
+        row["Project Type"]
+    )
+
+
+    if project == "New Building":
+        points += 100
+
+
+    elif project == "Major Alteration":
+        points += 75
+
+
+    elif project == "Alteration":
+        points += 40
+
+
+
+    try:
+
+        cost = float(
+            row.get(
+                "initial_cost",
+                0
+            )
+        )
+
+
+        if cost >= 5000000:
+
+            points += 100
+
+        elif cost >= 1000000:
+
+            points += 60
+
+        elif cost >= 500000:
+
+            points += 30
+
+
+    except:
+
+        pass
+
+
+    return points
+
+
+
+new_leads["Lead Score"] = (
+    new_leads.apply(
+        score,
+        axis=1
+    )
+)
+
+
+
+new_leads = new_leads.sort_values(
+    "Lead Score",
+    ascending=False
+)
+
+
+
+# =============================
+# EXPORT FRIENDLY EXCEL
+# =============================
+
+
+export_columns = [
+
+    "Lead Score",
+
+    "Project Type",
+
+    "Address",
+
+    "Borough",
+
+    "owner_s_business_name",
+
+    "Status",
+
+    "filing_date",
+
+    "initial_cost",
+
+    ID_COLUMN,
+
+    "job_description",
+
+    "applicant_first_name",
+
+    "applicant_last_name"
+
+]
+
+
+
+export_columns = [
+
+    c for c in export_columns
+
+    if c in new_leads.columns
+
+]
+
+
+
+new_leads[
+    export_columns
+].to_excel(
     OUTPUT_FILE,
     index=False
 )
 
 
 
+# =============================
+# UPDATE SEEN
+# =============================
+
+
 seen.update(
-    new[ID_COLUMN]
+    new_leads[ID_COLUMN]
     .tolist()
 )
 
@@ -297,19 +436,32 @@ pd.DataFrame(
 
 
 message = (
-    "🏗️ NYC Construction Leads\n"
-    f"New leads: {len(new)}\n\n"
+
+    "🏗️ NYC NEW CONSTRUCTION FILINGS\n"
+
+    f"New opportunities: {len(new_leads)}\n\n"
+
 )
 
 
 
-for _, r in new.head(20).iterrows():
+for _, row in new_leads.head(20).iterrows():
+
 
     message += (
-        f"🔥 {r['lead_score']} pts\n"
-        f"📍 {r.get('house_no','')} {r.get('street_name','')}\n"
-        f"🏢 {r.get('owner_s_business_name','Unknown')}\n"
-        f"💰 {r.get('initial_cost','Unknown')}\n\n"
+
+        f"🔥 Score: {row['Lead Score']}\n"
+
+        f"🔨 {row['Project Type']}\n"
+
+        f"📍 {row['Address']}\n"
+
+        f"🏢 {row.get('owner_s_business_name','Unknown')}\n"
+
+        f"💰 ${row.get('initial_cost','Unknown')}\n"
+
+        f"🆔 {row[ID_COLUMN]}\n\n"
+
     )
 
 
@@ -326,5 +478,5 @@ if DISCORD_WEBHOOK:
 
 
 print(
-    f"SUCCESS - Sent {len(new)} leads"
+    f"SUCCESS - Sent {len(new_leads)} leads"
 )
