@@ -30,7 +30,7 @@ response = requests.get(
     API_URL,
     params={
         "$limit": 5000,
-        "$order": "filing_date DESC"
+        "$order": "current_status_date DESC"
     }
 )
 
@@ -48,31 +48,37 @@ print(
 )
 
 
+
 if df.empty:
-    print("No data returned")
+    print("No records")
     exit()
 
 
 
 # =============================
-# DATE HANDLING
+# DATE CLEANING
 # =============================
 
-for col in [
-    "filing_date",
-    "current_status_date"
-]:
+# Filing date can arrive in different formats
+if "filing_date" in df.columns:
 
-    if col in df.columns:
-
-        df[col] = pd.to_datetime(
-            df[col],
-            errors="coerce",
-            format="mixed"
-        )
+    df["filing_date"] = pd.to_datetime(
+        df["filing_date"],
+        errors="coerce",
+        format="mixed"
+    )
 
 
-print("\nLatest dates returned:")
+if "current_status_date" in df.columns:
+
+    df["current_status_date"] = pd.to_datetime(
+        df["current_status_date"],
+        errors="coerce"
+    )
+
+
+
+print("\nLatest dates:")
 
 print(
     df[
@@ -86,7 +92,7 @@ print(
 
 
 # =============================
-# LAST 7 DAYS FILTER
+# LAST 7 DAYS
 # =============================
 
 cutoff = (
@@ -96,20 +102,44 @@ cutoff = (
 )
 
 
+
+df["lead_type"] = "ACTIVE PROJECT"
+
+
+
+recent_status = (
+    df["current_status_date"]
+    >= cutoff
+)
+
+
+
+recent_filing = (
+    df["filing_date"]
+    >= cutoff
+)
+
+
+
+df.loc[
+    recent_filing,
+    "lead_type"
+] = "NEW FILING"
+
+
+
 df = df[
-    (
-        df["filing_date"] >= cutoff
-    )
+    recent_status
     |
-    (
-        df["current_status_date"] >= cutoff
-    )
+    recent_filing
 ]
+
 
 
 print(
     f"After 7 day filter: {len(df)}"
 )
+
 
 
 if df.empty:
@@ -124,18 +154,20 @@ if df.empty:
 # REMOVE BAD STATUS
 # =============================
 
+bad_status = [
+    "Withdrawn",
+    "Rejected",
+    "Denied"
+]
+
+
 if "filing_status" in df.columns:
 
     df = df[
         ~df["filing_status"]
-        .isin(
-            [
-                "Withdrawn",
-                "Rejected",
-                "Denied"
-            ]
-        )
+        .isin(bad_status)
     ]
+
 
 
 print(
@@ -145,12 +177,20 @@ print(
 
 
 # =============================
-# LEAD SCORE
+# SCORE LEADS
 # =============================
 
-def lead_score(row):
+def score(row):
 
-    score = 0
+    points = 0
+
+
+    if row["lead_type"] == "NEW FILING":
+        points += 50
+
+    else:
+        points += 25
+
 
 
     status = str(
@@ -162,11 +202,12 @@ def lead_score(row):
 
 
     if "Permit" in status:
-        score += 50
+        points += 50
 
 
     if "Approved" in status:
-        score += 40
+        points += 40
+
 
 
     try:
@@ -180,13 +221,13 @@ def lead_score(row):
 
 
         if cost >= 5000000:
-            score += 100
+            points += 100
 
         elif cost >= 1000000:
-            score += 70
+            points += 70
 
         elif cost >= 500000:
-            score += 40
+            points += 40
 
 
     except:
@@ -194,12 +235,12 @@ def lead_score(row):
         pass
 
 
-    return score
+    return points
 
 
 
 df["lead_score"] = df.apply(
-    lead_score,
+    score,
     axis=1
 )
 
@@ -213,7 +254,7 @@ df = df.sort_values(
 
 
 # =============================
-# REMOVE ALREADY SENT
+# DUPLICATES
 # =============================
 
 os.makedirs(
@@ -306,12 +347,13 @@ pd.DataFrame(
 
 
 # =============================
-# SEND DISCORD
+# DISCORD TOP LEADS ONLY
 # =============================
 
 message = (
     "🏗️ NYC Construction Leads\n"
-    f"{datetime.now().strftime('%d/%m/%Y')}\n\n"
+    f"{datetime.now().strftime('%d/%m/%Y')}\n"
+    f"Total new leads: {len(new_leads)}\n\n"
 )
 
 
@@ -327,10 +369,11 @@ for _, row in new_leads.head(20).iterrows():
     message += (
 
         f"🔥 Score: {row['lead_score']}\n"
+        f"🆕 {row['lead_type']}\n"
         f"📍 {address}, {row.get('borough','')}\n"
         f"👤 {row.get('owner_s_business_name','Unknown')}\n"
-        f"💰 Cost: {row.get('initial_cost','Unknown')}\n"
-        f"📌 Status: {row.get('filing_status','Unknown')}\n"
+        f"💰 ${row.get('initial_cost','Unknown')}\n"
+        f"📌 {row.get('filing_status','Unknown')}\n"
         f"🆔 {row[ID_COLUMN]}\n\n"
 
     )
